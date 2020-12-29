@@ -7,8 +7,10 @@ author: Atsushi Sakai (@Atsushi_twi)
 """
 import matplotlib.pyplot as plt
 import cvxpy
+from cvxopt import matrix, solvers
 import math
 import numpy as np
+from functools import reduce
 import sys
 sys.path.append("../../PathPlanning/CubicSpline/")
 
@@ -238,7 +240,7 @@ def iterative_linear_mpc_control(xref, x0, dref, oa, od):
     for i in range(MAX_ITER):
         xbar = predict_motion(x0, oa, od, xref)
         poa, pod = oa[:], od[:]
-        oa, od, ox, oy, oyaw, ov = linear_mpc_control(xref, xbar, x0, dref)
+        oa, od, ox, oy, oyaw, ov = linear_mpc_control2(xref, xbar, x0, dref)
         du = sum(abs(oa - poa)) + sum(abs(od - pod))  # calc u change value
         if du <= DU_TH:
             break
@@ -246,6 +248,90 @@ def iterative_linear_mpc_control(xref, x0, dref, oa, od):
         print("Iterative is max iter")
 
     return oa, od, ox, oy, oyaw, ov
+
+# added by zbl
+def matrix_pow(base, exp):
+    if base.shape[0] != base.shape[1]:
+        raise Exception("base matrix has error! perhaps, the number of rows and columns is not equal")
+    if exp == 1:
+        return base
+    if exp == 0:
+        return np.eye(base.shape[0])
+    res = base
+    for i in range(exp-1):
+        res = np.dot(res, base)
+    return res
+
+def linear_mpc_control2(xref, xbar, x0, dref):
+    """
+    linear mpc control
+
+    xref: reference point
+    xbar: operational point
+    x0: initial state
+    dref: reference steer angle
+    """
+    # v, phi(yaw), delta(steer)
+    A, B, C = get_linear_model_matrix(
+        xbar[2, 0], xbar[3, 0], dref[0, 0])
+    '''
+    状态转移递推公式
+    Z = J*Z_k + Ku + LC
+    其中 Z = [Z_k+1, Z_k+2,...., Z_k+T]
+    '''
+    J = A
+    K = np.hstack((B, np.zeros((B.shape[0], B.shape[1]*(T-1)))))
+    L = np.identity(NX)
+    for i in range(2, T+1):
+        # 初始状态矩阵
+        J = np.vstack((J, matrix_pow(A, i)))
+        # 状态转移矩阵
+        tmp = np.dot(matrix_pow(A, i-1), B)
+        for j in range(1, i-1):
+            tmp = np.hstack((tmp, np.dot(matrix_pow(A, j), B)))
+        tmp = np.hstack((tmp, B))
+        tmp = np.hstack((tmp, np.zeros((B.shape[0], B.shape[1]*(T-i)))))
+        K = np.vstack((K, tmp))
+        # C常数矩阵
+        tmp = np.identity(NX)
+        for j in range(1, i):
+            # print(tmp)
+            # print("\n", matrix_pow(A, j))
+            tmp += matrix_pow(A, j)
+        L = np.vstack((L, tmp))
+    # print("J is: \n", J)
+    # print("K is: \n", K)
+    # print("L is: \n", L)
+
+    zref = xref[:, 1:].reshape(-1,1)
+    # print(zref.shape[0])
+    '''
+    E = J*Z_k + LC - Z_ref 
+    '''
+    E = np.dot(J, x0) + np.dot(L, C) - zref
+    # 优化距离的权重
+    W = np.kron(np.identity(T), Q)
+    # 优化控制量的权重
+    R = np.kron(np.identity(T), np.diag([0.01, 0.01]))
+    # 松弛因子的权重
+    p = 1
+
+    h_tmp = reduce(np.dot, [K.T, W, K])+R
+    p_tmp = np.vstack((np.zeros((h_tmp.shape[0], 1)), np.identity(1)*p))
+    # 注意这里拼凑 p-tmp 与 h-tmp的顺序不能颠倒
+    h_tmp = np.vstack((h_tmp, np.zeros((1, h_tmp.shape[1]))))
+    # print(h_tmp.shape[0], h_tmp.shape[1])
+    # print(p_tmp.shape[0])
+    h_tmp = np.hstack((h_tmp, p_tmp))
+    H = matrix(h_tmp)
+    g_tmp = 2*reduce(np.dot, [E.T, W, K])
+    g_tmp =np.hstack((g_tmp, np.zeros((g_tmp.shape[0],1))))
+    # 这里需要转置
+    g = matrix(g_tmp.T)
+    
+    print(g)
+    
+
 
 
 def linear_mpc_control(xref, xbar, x0, dref):
