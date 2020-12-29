@@ -269,7 +269,7 @@ def linear_mpc_control(xref, xbar, x0, dref):
 
         if t != 0:
             cost += cvxpy.quad_form(xref[:, t] - x[:, t], Q)
-
+        # v, phi(yaw), delta(steer)
         A, B, C = get_linear_model_matrix(
             xbar[2, t], xbar[3, t], dref[0, t])
         constraints += [x[:, t + 1] == A * x[:, t] + B * u[:, t] + C]
@@ -325,6 +325,7 @@ def calc_ref_trajectory(state, cx, cy, cyaw, ck, sp, dl, pind):
 
     for i in range(T + 1):
         travel += abs(state.v) * DT
+        # 从连续的路径上，取v*dt间隔路径点
         dind = int(round(travel / dl))
 
         if (ind + dind) < ncourse:
