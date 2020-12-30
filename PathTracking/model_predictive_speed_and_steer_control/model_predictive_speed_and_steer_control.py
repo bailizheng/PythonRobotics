@@ -219,7 +219,7 @@ def calc_nearest_index(state, cx, cy, cyaw, pind):
 
 def predict_motion(x0, oa, od, xref):
     xbar = xref * 0.0
-    for i, _ in enumerate(x0):
+    for i in range(len(x0)-1):
         xbar[i, 0] = x0[i]
 
     state = State(x=x0[0], y=x0[1], yaw=x0[3], v=x0[2])
@@ -313,7 +313,8 @@ def linear_mpc_control2(xref, xbar, x0, dref):
     '''
     E = J*Z_k + LC - Z_ref 
     '''
-    E = np.dot(J, x0) + np.dot(L, C) - zref
+    zk = np.array([x0[0], x0[1], x0[2], x0[3]])
+    E = np.dot(J, zk) + np.dot(L, C) - zref
     # 优化距离的权重
     W = np.kron(np.identity(T), Q)
     # 优化控制量的权重
@@ -364,22 +365,27 @@ def linear_mpc_control2(xref, xbar, x0, dref):
     '''
     # v和presteer上限
     for i in range(T):
-        b.append(MAX_SPEED - x0[2], MAX_STEER - x0[4])
+        b.extend([MAX_SPEED - x0[2], MAX_STEER - x0[4]])
     # v和presteer下限
     for i in range(T):
         # STEERmin = -MAX_STEER
-        b.append(-MIN_SPEED+ x0[2], MAX_STEER + x0[4])
+        b.extend([-MIN_SPEED+ x0[2], MAX_STEER + x0[4]])
     # a和steer上限
     for i in range(T):
-        b.append(MAX_ACCEL, MAX_STEER)
+        b.extend([MAX_ACCEL, MAX_DSTEER])
     # 松弛因子
     b.append(0)
     for i in range(T):
-        b.append(-MAX_ACCEL, -MAX_ACCEL)
+        b.extend([-MAX_ACCEL, -MAX_DSTEER])
     # 松弛因子
     b.append(0)
+    print(b)
+    # b = np.array(b)
+    M = matrix(M)
+    b = matrix(b)
 
-
+    sol=solvers.qp(H, G, M, b)
+    print(sol['x'])
 
 def linear_mpc_control(xref, xbar, x0, dref):
     """
