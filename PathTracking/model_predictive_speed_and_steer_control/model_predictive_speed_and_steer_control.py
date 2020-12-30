@@ -65,12 +65,12 @@ class State:
     vehicle state class
     """
 
-    def __init__(self, x=0.0, y=0.0, yaw=0.0, v=0.0):
+    def __init__(self, x=0.0, y=0.0, yaw=0.0, v=0.0, predelta=0.0):
         self.x = x
         self.y = y
         self.yaw = yaw
         self.v = v
-        self.predelta = None
+        self.predelta = predelta
 
 
 def pi_2_pi(angle):
@@ -167,16 +167,21 @@ def plot_car(x, y, yaw, steer=0.0, cabcolor="-r", truckcolor="-k"):  # pragma: n
 def update_state(state, a, delta):
 
     # input check
-    if delta >= MAX_STEER:
-        delta = MAX_STEER
-    elif delta <= -MAX_STEER:
-        delta = -MAX_STEER
+    # if delta >= MAX_STEER:
+    #     delta = MAX_STEER
+    # elif delta <= -MAX_STEER:
+    #     delta = -MAX_STEER
+    state.predelta += delta
+    if state.predelta >= MAX_STEER:
+        state.predelta  = MAX_STEER
+    elif state.predelta <= -MAX_STEER:
+        state.predelta  = -MAX_STEER
 
     state.x = state.x + state.v * math.cos(state.yaw) * DT
     state.y = state.y + state.v * math.sin(state.yaw) * DT
     state.yaw = state.yaw + state.v / WB * math.tan(delta) * DT
     state.v = state.v + a * DT
-
+    
     if state. v > MAX_SPEED:
         state.v = MAX_SPEED
     elif state. v < MIN_SPEED:
@@ -327,10 +332,52 @@ def linear_mpc_control2(xref, xbar, x0, dref):
     g_tmp = 2*reduce(np.dot, [E.T, W, K])
     g_tmp =np.hstack((g_tmp, np.zeros((g_tmp.shape[0],1))))
     # 这里需要转置
-    g = matrix(g_tmp.T)
-    
-    print(g)
-    
+    G = matrix(g_tmp.T)
+    # print(g)
+    '''
+    min 1/2*X^T*H*X+G^T*X
+    S.T.: MX <= b
+          NX = h
+        A = 状态累加矩阵
+        M = [[A， O], [-A, O], [控制量上限矩阵], [控制量下限矩阵]]
+        b = [Vmax - Vcur, STEERmax-STEERcur, -Vmin+Vcur, -STEERmin+STEERcur, 
+        MAX_ACCEL, MAX_STEER, -MAX_ACCEL, -MAX_STEER]
+    '''
+    M = np.kron(np.tri(T), np.identity(NU))
+    # v和presteer
+    M = np.vstack((np.hstack((M, np.zeros((M.shape[0], 1)))) ,np.hstack((M*(-1), np.zeros((M.shape[0], 1))))))
+    # a和steer上限
+    # T*NU 是T时域内的控制量U,+1是为了控制松弛因子
+    M = np.vstack((M, np.identity(T*NU+1)))
+    # 松弛因子不用考虑
+    M[-1, -1] = 0
+
+    # a和steer下限
+    M = np.vstack((M, np.identity(T*NU+1)*(-1)))
+    # 松弛因子不用考虑
+    M[-1, -1] = 0
+    b = []
+
+    '''
+    x0 is current state: [x, y, v, yaw, predelta]
+
+    '''
+    # v和presteer上限
+    for i in range(T):
+        b.append(MAX_SPEED - x0[2], MAX_STEER - x0[4])
+    # v和presteer下限
+    for i in range(T):
+        # STEERmin = -MAX_STEER
+        b.append(-MIN_SPEED+ x0[2], MAX_STEER + x0[4])
+    # a和steer上限
+    for i in range(T):
+        b.append(MAX_ACCEL, MAX_STEER)
+    # 松弛因子
+    b.append(0)
+    for i in range(T):
+        b.append(-MAX_ACCEL, -MAX_ACCEL)
+    # 松弛因子
+    b.append(0)
 
 
 
@@ -491,7 +538,7 @@ def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state):
         xref, target_ind, dref = calc_ref_trajectory(
             state, cx, cy, cyaw, ck, sp, dl, target_ind)
 
-        x0 = [state.x, state.y, state.v, state.yaw]  # current state
+        x0 = [state.x, state.y, state.v, state.yaw, state.predelta]  # current state
 
         oa, odelta, ox, oy, oyaw, ov = iterative_linear_mpc_control(
             xref, x0, dref, oa, odelta)
@@ -509,7 +556,8 @@ def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state):
         t.append(time)
         d.append(di)
         a.append(ai)
-
+        # added by zbl
+        # self.predelta += di
         if check_goal(state, goal, target_ind, len(cx)):
             print("Goal")
             break
@@ -522,7 +570,7 @@ def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state):
             plt.plot(x, y, "ob", label="trajectory")
             plt.plot(xref[0, :], xref[1, :], "xk", label="xref")
             plt.plot(cx[target_ind], cy[target_ind], "xg", label="target")
-            plot_car(state.x, state.y, state.yaw, steer=di)
+            plot_car(state.x, state.y, state.yaw, steer=state.predelta)
             plt.axis("equal")
             plt.grid(True)
             plt.title("Time[s]:" + str(round(time, 2))
