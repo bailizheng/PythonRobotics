@@ -1,17 +1,11 @@
 """
-
 Path tracking simulation with iterative linear model predictive control for speed and steer control
-
 author: Atsushi Sakai (@Atsushi_twi)
-
 """
 import matplotlib.pyplot as plt
 import cvxpy
-from cvxopt import matrix, solvers
 import math
 import numpy as np
-np.set_printoptions(threshold=np.inf)
-from functools import reduce
 import sys
 sys.path.append("../../PathPlanning/CubicSpline/")
 
@@ -27,9 +21,8 @@ T = 5  # horizon length
 
 # mpc parameters
 R = np.diag([0.01, 0.01])  # input cost matrix
-Rd = np.diag([1.0, 10.0])  # input difference cost matrix
-Q = np.diag([1.0, 1.0, 0.5, 0.01])  # state cost matrix
-wq = 0.98
+Rd = np.diag([0.01, 1.0])  # input difference cost matrix
+Q = np.diag([1.0, 1.0, 0.5, 0.5])  # state cost matrix
 Qf = Q  # state final matrix
 GOAL_DIS = 1.5  # goal distance
 STOP_SPEED = 0.5 / 3.6  # stop speed
@@ -55,7 +48,7 @@ WB = 2.5  # [m]
 
 MAX_STEER = np.deg2rad(45.0)  # maximum steering angle [rad]
 MAX_DSTEER = np.deg2rad(30.0)  # maximum steering speed [rad/s]
-MAX_SPEED = 20.0 / 3.6  # maximum speed [m/s]
+MAX_SPEED = 55.0 / 3.6  # maximum speed [m/s]
 MIN_SPEED = -20.0 / 3.6  # minimum speed [m/s]
 MAX_ACCEL = 1.0  # maximum accel [m/ss]
 
@@ -67,12 +60,12 @@ class State:
     vehicle state class
     """
 
-    def __init__(self, x=0.0, y=0.0, yaw=0.0, v=0.0, predelta=0.0):
+    def __init__(self, x=0.0, y=0.0, yaw=0.0, v=0.0):
         self.x = x
         self.y = y
         self.yaw = yaw
         self.v = v
-        self.predelta = predelta
+        self.predelta = None
 
 
 def pi_2_pi(angle):
@@ -97,7 +90,6 @@ def get_linear_model_matrix(v, phi, delta):
     A[1, 2] = DT * math.sin(phi)
     A[1, 3] = DT * v * math.cos(phi)
     A[3, 2] = DT * math.tan(delta) / WB
-   
 
     B = np.zeros((NX, NU))
     B[2, 0] = DT
@@ -174,18 +166,12 @@ def update_state(state, a, delta):
         delta = MAX_STEER
     elif delta <= -MAX_STEER:
         delta = -MAX_STEER
-    # state.predelta += delta
-    # # print(MAX_STEER)
-    # if state.predelta >= MAX_STEER:
-    #     state.predelta  = MAX_STEER
-    # elif state.predelta <= -MAX_STEER:
-    #     state.predelta  = -MAX_STEER
 
     state.x = state.x + state.v * math.cos(state.yaw) * DT
     state.y = state.y + state.v * math.sin(state.yaw) * DT
     state.yaw = state.yaw + state.v / WB * math.tan(delta) * DT
     state.v = state.v + a * DT
-    
+
     if state. v > MAX_SPEED:
         state.v = MAX_SPEED
     elif state. v < MIN_SPEED:
@@ -223,10 +209,10 @@ def calc_nearest_index(state, cx, cy, cyaw, pind):
 
 def predict_motion(x0, oa, od, xref):
     xbar = xref * 0.0
-    for i in range(len(x0)-1):
+    for i, _ in enumerate(x0):
         xbar[i, 0] = x0[i]
 
-    state = State(x=x0[0], y=x0[1], yaw=x0[3], v=x0[2], predelta=x0[4])
+    state = State(x=x0[0], y=x0[1], yaw=x0[3], v=x0[2])
     for (ai, di, i) in zip(oa, od, range(1, T + 1)):
         state = update_state(state, ai, di)
         xbar[0, i] = state.x
@@ -249,7 +235,7 @@ def iterative_linear_mpc_control(xref, x0, dref, oa, od):
     for i in range(MAX_ITER):
         xbar = predict_motion(x0, oa, od, xref)
         poa, pod = oa[:], od[:]
-        oa, od, ox, oy, oyaw, ov = linear_mpc_control2(xref, xbar, x0, dref)
+        oa, od, ox, oy, oyaw, ov = linear_mpc_control(xref, xbar, x0, dref)
         du = sum(abs(oa - poa)) + sum(abs(od - pod))  # calc u change value
         if du <= DU_TH:
             break
@@ -258,273 +244,16 @@ def iterative_linear_mpc_control(xref, x0, dref, oa, od):
 
     return oa, od, ox, oy, oyaw, ov
 
-# added by zbl
-def matrix_pow(base, exp):
-    if base.shape[0] != base.shape[1]:
-        raise Exception("base matrix has error! perhaps, the number of rows and columns is not equal")
-    if exp == 1:
-        return base
-    if exp == 0:
-        return np.eye(base.shape[0])
-    res = base
-    for i in range(exp-1):
-        res = np.dot(res, base)
-    return res
-
-def get_ox_oy_from_mpc(x0, oa, od):
-    cur = State(x=x0[0], y=x0[1], yaw=x0[3], v=x0[2], predelta=x0[4])
-    ox = np.array(cur.x)
-    oy = np.array(cur.y)
-    oyaw = np.array(cur.yaw)
-    ov = np.array(cur.v)
-    n = len(oa)
-    for i in range(n):
-        cur = update_state(cur, oa[i], od[i])
-        ox = np.append(ox, cur.x)
-        oy = np.append(oy, cur.y)
-        oyaw = np.append(oyaw, cur.yaw)
-        ov = np.append(ov, cur.v)
-    return ox[1:], oy[1:], oyaw[1:], ov[1:]
-    
-def get_ox_oy_from_mpc2(J, Z_k, K, u, L, C):
-    '''
-    状态转移递推公式
-    Z = J*Z_k + Ku + LC
-    '''
-    Z = np.dot(J, np.array(Z_k)) + np.dot(K, u) + np.dot(L, C)
-    # print("the shape of np.dot(J, Z_k) is (%f)" % np.dot(J, np.array(Z_k)).shape[0])
-    # print("the shape of np.dot(K, u) is (%f)" % np.dot(K, u).shape[0])
-    print("pre Z is \n", Z)
-    Z = Z.reshape((-1, NX))
-    # print("the shape of Z is (%f, %f)" % (Z.shape[0], Z.shape[1]))
-    print("Z is \n", Z)
-    # print("ox is : ", Z[:, 0])
-    # print("oy is : ", Z[:, 1])
-    # print("ov is : ", Z[:, 2])
-    # print("oyaw is : ", Z[:, 3])
-    # raise("111")
-    return Z[:, 0], Z[:, 1], Z[:, 2], Z[:, 3]
-
-
-def get_M_matrix(T, dt, NU):
-    M = np.zeros((T, T*NU+1))
-    for i in range(T):
-        for j in range(0, i+1, 2):
-            M[i][j] = dt
-    
-    # 拼凑一个限制最低速度的状态转移矩阵
-    return np.vstack((M, M*(-1)))
-
-def linear_mpc_control2(xref, xbar, x0, dref):
-    """
-    linear mpc control
-
-    xref: reference point
-    xbar: operational point
-    x0: initial state
-    dref: reference steer angle
-    """
-    
-    # v, phi(yaw), delta(steer)
-    A, B, C = get_linear_model_matrix(
-        x0[2], x0[3], dref[0,0])
-    print("%f, %f, %f" % (x0[2], x0[3], dref[0,0]))
-    '''
-    状态转移递推公式
-    Z = J*Z_k + Ku + LC
-    其中 Z = [Z_k+1, Z_k+2,...., Z_k+T]
-    '''
-    J = A
-    K = np.hstack((B, np.zeros((B.shape[0], B.shape[1]*(T-1)))))
-    L = np.identity(NX)
-    for i in range(2, T+1):
-        # 初始状态矩阵
-        J = np.vstack((J, matrix_pow(A, i)))
-        # 状态转移矩阵
-        tmp = np.dot(matrix_pow(A, i-1), B)
-        for j in range(1, i-1):
-            tmp = np.hstack((tmp, np.dot(matrix_pow(A, j), B)))
-        tmp = np.hstack((tmp, B))
-        tmp = np.hstack((tmp, np.zeros((B.shape[0], B.shape[1]*(T-i)))))
-        K = np.vstack((K, tmp))
-        # C常数矩阵
-        tmp = np.identity(NX)
-        for j in range(1, i):
-            # print(tmp)
-            # print("\n", matrix_pow(A, j))
-            tmp += matrix_pow(A, j)
-        L = np.vstack((L, tmp))
-    # print("J is: \n", J)
-    # print("K is: \n", K)
-    # print("L is: \n", L)
-    # print("C is: \n", C)
-   
-    # print("B is :\n", B)
-    # print("AB is : \n", np.dot(A,B))
-    np.savetxt("A.txt", A,fmt='%f',delimiter=',')
-    np.savetxt("J.txt", J,fmt='%f',delimiter=',')
-    np.savetxt("K.txt", K,fmt='%f',delimiter=',')
-    np.savetxt("L.txt", L,fmt='%f',delimiter=',')
-    np.savetxt("xref.txt", xref,fmt='%f',delimiter=',')
-    print("xref[:, :-1] is \n", xref[:, :-1])
-    print("xref is \n", xref)
-    zref = xref[:, :-1].reshape(-1, 1, order='F')[:, 0]
-    print("zref is \n", zref)
-    # print(zref.shape[0])
-    # raise("1111")
-    '''
-    E = J*Z_k + LC - Z_ref 
-    '''
-    # zk = np.array([[x0[0]], [x0[1]], [x0[2]], [x0[3]]])
-    zk = np.array([x0[0], x0[1], x0[2], x0[3]])
-    # print("zk is: \n ", zk)
-    # print("np.dot(J, zk) : \n", np.dot(J, zk))
-    # print("np.dot(L, C) : \n", np.dot(L, C))
-    # print("J: ", J.shape[0], J.shape[1])
-    print("zref is: ", zref)
-    # print("zref: ", zref.shape[0], zref.shape[1])
-    # tmp = np.dot(J, zk)
-    # print("np.dot(J, zk): ", tmp.shape[0], tmp.shape[1])
-    # tmp = np.dot(L, C)
-    print("np.dot(L, C): ", np.dot(L, C))
-    
-    E = np.dot(J, zk) + np.dot(L, C) - zref
-    # print("E: ", E.shape[0])
-    print("E is \n", E)
-    # raise("111")
-    # 优化距离的权重
-    W = np.kron(np.identity(T) * np.array([wq **i for i in range(T)]), Q)
-    print("W is \n", W)
-
-    # 优化控制量的权重
-    R = np.kron(np.identity(T), np.diag([0.01, 0.01]))
-    # 松弛因子的权重
-    p = 10
-    # 两个相邻控制量的变化量最小
-    P = np.eye(T)*(-1) + np.eye(T, k=1)
-    P[-1, -1] = 0.0
-    P = np.kron(P, Rd) 
-    # P = np.kron(, Rd) 
-    # print(P)
-    # print(P.shape[0], P.shape[1])
-    h_tmp = reduce(np.dot, [K.T, W, K]) + R + np.dot(P.T, P)
-    # print("h_tmp is\n", reduce(np.dot, [K.T, W, K]))
-    # raise("1111")
-    # print(h_tmp.shape[0], P.shape[1])
-
-    p_tmp = np.vstack((np.zeros((h_tmp.shape[0], 1)), np.identity(1)*p))
-    # 注意这里拼凑 p-tmp 与 h-tmp的顺序不能颠倒
-    h_tmp = np.vstack((h_tmp, np.zeros((1, h_tmp.shape[1]))))
-    # print(h_tmp.shape[0], h_tmp.shape[1])
-    # print(p_tmp.shape[0])
-    h_tmp = np.hstack((h_tmp, p_tmp))
-    H = matrix(h_tmp)
-    # print(h_tmp.shape[0], h_tmp.shape[1])
-    g_tmp = 2*reduce(np.dot, [E.T, W, K])
-    g_tmp = np.append(g_tmp, 0)
-    # g_tmp = np.hstack((g_tmp, np.zeros((g_tmp.shape[0],1))))
-    # 这里需要转置
-    g = matrix(g_tmp)
-    # print(g)
-    '''
-    min 1/2*X^T*H*X+G^T*X
-    S.T.: MX <= b
-          NX = h
-        A = 状态累加矩阵
-        M = [[A， O], [-A, O], [控制量上限矩阵], [控制量下限矩阵]]
-        b = [Vmax - Vcur, STEERmax-STEERcur, -Vmin+Vcur, -STEERmin+STEERcur, 
-        MAX_ACCEL, MAX_STEER, -MAX_ACCEL, -MAX_STEER]
-    '''
-    M = get_M_matrix(T, DT, NU)
-    # print(M.shape[0], M.shape[1])
-    # print(P.shape[0], P.shape[1])
-    # raise("1111")
-    # M = np.kron(np.tri(T), np.identity(NU))
-    # # v和presteer
-    # M = np.vstack((np.hstack((M, np.zeros((M.shape[0], 1)))) ,np.hstack((M*(-1), np.zeros((M.shape[0], 1))))))
-    # a和steer上限
-    # T*NU 是T时域内的控制量U,+1是为了控制松弛因子
-    M = np.vstack((M, np.identity(T*NU+1)))
-    # 松弛因子不用考虑
-    # M[-1, -1] = 0
-    # a和steer下限
-    M = np.vstack((M, np.identity(T*NU+1)*(-1)))
-    # 松弛因子不用考虑
-    M[-1, -1] = 0
-
-    # 限制角速度与jerk（加加速度）
-    P = np.eye(T)*(-1) + np.eye(T, k=1)
-    # 删除最后一行
-    P = np.delete(P, -1, axis=0)
-    P = np.kron(P, np.identity(NU))
-    # print(M.shape[0], M.shape[1])
-    M = np.vstack((M, np.hstack((P, np.zeros((P.shape[0], 1))))))
-    M = np.vstack((M, np.hstack((P*(-1), np.zeros((P.shape[0], 1))))))
-    # print(M.shape[0], M.shape[1])
-    b = []
-
-    '''
-    x0 is current state: [x, y, v, yaw, predelta]
-    '''
-    # v和presteer上限
-    for i in range(T):
-        b.append(MAX_SPEED - x0[2])
-    # v和presteer下限
-    for i in range(T):
-        # STEERmin = -MAX_STEER
-        b.append(-MIN_SPEED+ x0[2])
-    # a和steer上限
-    for i in range(T):
-        b.extend([MAX_ACCEL, MAX_STEER])
-    # 松弛因子
-    b.append(100)
-    # a和steer下限
-    for i in range(T):
-        b.extend([MAX_ACCEL, MAX_STEER])
-    # 松弛因子
-    b.append(100)
-
-    # jerk与角速度上下限
-    for i in range(T-1):
-        b.extend([MAX_ACCEL*DT, DT * MAX_DSTEER])
-    for i in range(T-1):
-        b.extend([MAX_ACCEL*DT, DT * MAX_DSTEER])
-    # print(b))
-    # b = np.array(b)
-    M = matrix(M)
-    b = matrix(b)
-    np.savetxt("H.txt", H,fmt='%f',delimiter=',')
-    np.savetxt("g.txt", g,fmt='%f',delimiter=',')
-    np.savetxt("M.txt", M,fmt='%f',delimiter=',')
-    np.savetxt("b.txt", b,fmt='%f',delimiter=',')
-    sol=solvers.qp(H, g, M, b)
-    # print(type(sol['x']))
-    oa = np.array(sol['x'][0:-1:2]).reshape((1, T))[0]
-    od = np.array(sol['x'][1:-1:2]).reshape((1, T))[0]
-    u = np.array(sol['x'][0:-1])[:, 0]
-    print("sol: \n", sol['x'])
-    print("u is: \n", u)
-    # print(oa[0])
-    # ox, oy, oyaw, ov = get_ox_oy_from_mpc(x0, oa[0], od[0])
-    ox, oy, ov, oyaw = get_ox_oy_from_mpc2(J, zk, K, u, L, C)
-    # print(ox)
-    # print("oa:\n", oa)
-    # print("od:\n", od) 
-    
-    # print(oa[0])
-    # print(od[0])
-    return oa, od, ox, oy, oyaw, ov
 
 def linear_mpc_control(xref, xbar, x0, dref):
     """
     linear mpc control
-
     xref: reference point
     xbar: operational point
     x0: initial state
     dref: reference steer angle
     """
-    x0 = x0[:NX]
+
     x = cvxpy.Variable((NX, T + 1))
     u = cvxpy.Variable((NU, T))
 
@@ -536,16 +265,17 @@ def linear_mpc_control(xref, xbar, x0, dref):
 
         if t != 0:
             cost += cvxpy.quad_form(xref[:, t] - x[:, t], Q)
-        # v, phi(yaw), delta(steer)
+
         A, B, C = get_linear_model_matrix(
             xbar[2, t], xbar[3, t], dref[0, t])
+        print("%f, %f, %f" % (xbar[2, t], xbar[3, t], dref[0, t]))
         constraints += [x[:, t + 1] == A * x[:, t] + B * u[:, t] + C]
 
         if t < (T - 1):
             cost += cvxpy.quad_form(u[:, t + 1] - u[:, t], Rd)
             constraints += [cvxpy.abs(u[1, t + 1] - u[1, t]) <=
                             MAX_DSTEER * DT]
-
+    # raise("11111")
     cost += cvxpy.quad_form(xref[:, T] - x[:, T], Qf)
 
     constraints += [x[:, 0] == x0]
@@ -568,7 +298,7 @@ def linear_mpc_control(xref, xbar, x0, dref):
     else:
         print("Error: Cannot solve mpc..")
         oa, odelta, ox, oy, oyaw, ov = None, None, None, None, None, None
-    # print("oa: ", type(oa))
+
     return oa, odelta, ox, oy, oyaw, ov
 
 
@@ -589,16 +319,11 @@ def calc_ref_trajectory(state, cx, cy, cyaw, ck, sp, dl, pind):
     dref[0, 0] = 0.0  # steer operational point should be 0
 
     travel = 0.0
-    # if state.v < 0.5:
-    #     state.v = 0.5
-    cur = 0
+
     for i in range(T + 1):
         travel += abs(state.v) * DT
-        # print("travel: ", travel)
-        # 从连续的路径上，取v*dt间隔路径点
         dind = int(round(travel / dl))
-        # if dind == 0:
-        #     dind = cur + 1 
+
         if (ind + dind) < ncourse:
             xref[0, i] = cx[ind + dind]
             xref[1, i] = cy[ind + dind]
@@ -611,7 +336,7 @@ def calc_ref_trajectory(state, cx, cy, cyaw, ck, sp, dl, pind):
             xref[2, i] = sp[ncourse - 1]
             xref[3, i] = cyaw[ncourse - 1]
             dref[0, i] = 0.0
-        cur = dind
+
     return xref, ind, dref
 
 
@@ -638,14 +363,12 @@ def check_goal(state, goal, tind, nind):
 def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state):
     """
     Simulation
-
     cx: course x position list
     cy: course y position list
     cy: course yaw position list
     ck: course curvature list
     sp: speed profile
     dl: course tick [m]
-
     """
 
     goal = [cx[-1], cy[-1]]
@@ -669,14 +392,15 @@ def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state):
     target_ind, _ = calc_nearest_index(state, cx, cy, cyaw, 0)
 
     odelta, oa = None, None
+
     cyaw = smooth_yaw(cyaw)
 
     while MAX_TIME >= time:
         xref, target_ind, dref = calc_ref_trajectory(
             state, cx, cy, cyaw, ck, sp, dl, target_ind)
 
-        x0 = [state.x, state.y, state.v, state.yaw, state.predelta]  # current state
-        dref[0, 0] = d[-1]
+        x0 = [state.x, state.y, state.v, state.yaw]  # current state
+
         oa, odelta, ox, oy, oyaw, ov = iterative_linear_mpc_control(
             xref, x0, dref, oa, odelta)
 
@@ -693,14 +417,16 @@ def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state):
         t.append(time)
         d.append(di)
         a.append(ai)
-        # added by zbl
-        # self.predelta += di
+
         if check_goal(state, goal, target_ind, len(cx)):
             print("Goal")
             break
 
         if show_animation:  # pragma: no cover
             plt.cla()
+            # for stopping simulation with the esc key.
+            plt.gcf().canvas.mpl_connect('key_release_event',
+                    lambda event: [exit(0) if event.key == 'escape' else None])
             if ox is not None:
                 plt.plot(ox, oy, "xr", label="MPC")
             plt.plot(cx, cy, "-r", label="course")
@@ -830,7 +556,7 @@ def main():
 
     sp = calc_speed_profile(cx, cy, cyaw, TARGET_SPEED)
 
-    initial_state = State(x=cx[0], y=cy[0], yaw=cyaw[0], v=0.3)
+    initial_state = State(x=cx[0], y=cy[0], yaw=cyaw[0], v=0.0)
 
     t, x, y, yaw, v, d, a = do_simulation(
         cx, cy, cyaw, ck, sp, dl, initial_state)
