@@ -17,7 +17,7 @@ except:
 
 NX = 4  # x = x, y, v, yaw
 NU = 2  # a = [accel, steer]
-T = 5  # horizon length
+T = 10  # horizon length
 
 # mpc parameters
 R = np.diag([0.01, 0.01])  # input cost matrix
@@ -267,7 +267,7 @@ def linear_mpc_control(xref, xbar, x0, dref):
             cost += cvxpy.quad_form(xref[:, t] - x[:, t], Q)
 
         A, B, C = get_linear_model_matrix(
-            xbar[2, t], xbar[3, t], dref[0, t])
+            x[2, t], x[3, t], u[:, t][1])
         print("%f, %f, %f" % (xbar[2, t], xbar[3, t], dref[0, t]))
         constraints += [x[:, t + 1] == A * x[:, t] + B * u[:, t] + C]
 
