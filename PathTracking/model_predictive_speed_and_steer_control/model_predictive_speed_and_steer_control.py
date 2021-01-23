@@ -7,6 +7,7 @@ author: Atsushi Sakai (@Atsushi_twi)
 """
 import matplotlib.pyplot as plt
 import cvxpy
+import ipopt
 from cvxopt import matrix, solvers
 import math
 import numpy as np
@@ -14,7 +15,7 @@ np.set_printoptions(threshold=np.inf)
 from functools import reduce
 import sys
 sys.path.append("../../PathPlanning/CubicSpline/")
-
+import nlmpc_problem
 try:
     import cubic_spline_planner
 except:
@@ -55,8 +56,8 @@ WB = 2.5  # [m]
 
 MAX_STEER = np.deg2rad(45.0)  # maximum steering angle [rad]
 MAX_DSTEER = np.deg2rad(30.0)  # maximum steering speed [rad/s]
-MAX_SPEED = 20.0 / 3.6  # maximum speed [m/s]
-MIN_SPEED = -20.0 / 3.6  # minimum speed [m/s]
+MAX_SPEED = 10.0 / 3.6  # maximum speed [m/s]
+MIN_SPEED = 1.0 / 3.6  # minimum speed [m/s]
 MAX_ACCEL = 1.0  # maximum accel [m/ss]
 
 show_animation = True
@@ -261,13 +262,13 @@ def iterative_linear_mpc_control(xref, x0, dref, oa, od):
     """
 
     if oa is None or od is None:
-        oa = [0.0] * T
-        od = [0.0] * T
+        oa = [0.0] * (T-1)
+        od = [0.0] * (T-1)
 
     for i in range(MAX_ITER):
         xbar = predict_motion(x0, oa, od, xref)
         poa, pod = oa[:], od[:]
-        oa, od, ox, oy, oyaw, ov = linear_mpc_control3(xref, xbar, x0, dref)
+        oa, od, ox, oy, oyaw, ov = linear_mpc_control4(xref, xbar, x0, dref)
         du = sum(abs(oa - poa)) + sum(abs(od - pod))  # calc u change value
         if du <= DU_TH:
             break
@@ -691,8 +692,80 @@ def linear_mpc_control3(xref, xbar, x0, dref):
     # raise("1111")
     return oa, od, ox, oy, oyaw, ov
 
+def linear_mpc_control4(xref, xbar, z0, dref):
+    z0 = z0[:NX]
+    # [:-4] 是去除最后一个点，保留T个点
+    zref = np.concatenate((z0, xref.reshape(-1, 1, order='F')[:, 0][:-8]))
+    
+
+    x0 = z0.copy()
+    
+    # lb = [1.0, 1.0, 1.0, 1.0]
+    # ub = [5.0, 5.0, 5.0, 5.0]
+
+    # cl = [25.0, 40.0]
+    # cu = [2.0e19, 40.0]
+
+    ub = z0.copy()
+    lb = z0.copy()
+
+    cl = [0 for i in range((T-1)*NX)]
+    cu = [0 for i in range((T-1)*NX)]
+    '''
+    x0 is current state: [x, y, v, yaw, predelta]
+    '''
+    # v上限下限
+    for i in range(T-1):
+        ub.extend([10e9, 10e9, MAX_SPEED, 3.14])
+        lb.extend([-10e9, -10e9, MIN_SPEED, -3.14])
+        x0 += [0,0,0,0]
 
 
+    # a和steer上限下限
+    for i in range(T-1):
+        ub.extend([MAX_ACCEL, MAX_STEER])
+        lb.extend([-MAX_ACCEL, -MAX_STEER])
+        x0.extend([0,0])
+
+    # dsteer上下限
+    for i in range(T-2):        
+        cl.append(-DT*MAX_DSTEER)
+        cu.append(DT*MAX_DSTEER)
+
+    print("x is",len(x0))
+    nlp = ipopt.problem(
+                n=len(x0),
+                m=len(cl),
+                problem_obj=nlmpc_problem.nlmpc(zref),
+                lb=lb,
+                ub=ub,
+                cl=cl,
+                cu=cu
+                )
+    nlp.addOption('mu_strategy', 'adaptive')
+    nlp.addOption('tol', 1e-7)
+    nlp.addOption('print_level', 0)
+    nlp.addOption("max_iter", 100)
+    x, info = nlp.solve(x0)
+
+    z = x[:T*NX]
+    u = x[T*NX:]
+    
+    ox = z[0::NX]
+    oy = z[1::NX]
+    ov = z[2::NX]
+    oyaw = z[3::NX]
+
+    oa = u[0::2]
+    od = u[1::2]
+    print("z0 is\n", z0)
+    print("lb is\n", lb)
+    print("ub is\n", ub )
+    print("zref is\n", zref)
+    print(z)
+    print(u)
+    return oa, od, ox, oy, oyaw, ov 
+    
 def linear_mpc_control(xref, xbar, x0, dref):
     """
     linear mpc control
@@ -775,8 +848,8 @@ def calc_ref_trajectory(state, cx, cy, cyaw, ck, sp, dl, pind):
         # print("travel: ", travel)
         # 从连续的路径上，取v*dt间隔路径点
         dind = int(round(travel / dl))
-        # if dind == 0:
-        #     dind = cur + 1 
+        if dind == 0:
+            dind = cur + 1 
         if (ind + dind) < ncourse:
             xref[0, i] = cx[ind + dind]
             xref[1, i] = cy[ind + dind]
