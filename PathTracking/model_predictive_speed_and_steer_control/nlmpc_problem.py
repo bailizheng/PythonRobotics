@@ -10,8 +10,8 @@ class nlmpc(object):
 
         # mpc parameters
         self.R = np.diag([0.01, 0.01])  # input cost matrix
-        self.Rd = np.diag([0.01, 0.01])  # input difference cost matrix
-        self.Q = np.diag([1.0, 1.0, 1.0, 0.01])  # state cost matrix
+        self.Rd = np.diag([0.01, 0.5])  # input difference cost matrix
+        self.Q = np.diag([3.0, 3.0, 0.01, 0.00])  # state cost matrix
         self.wq = 1.0
         self.Qf = self.Q  # state final matrix
         # self.GOAL_DIS = 1.5  # goal distance
@@ -85,7 +85,8 @@ class nlmpc(object):
         '''
         obj: (ox - xref)^T * Q * (ox - xref) + ou^T * Ru *ou + (Pu*ou)^T * (Pu*ou)
         '''
-        return reduce(np.dot, [(ox - self.xref).T, self.Qx, (ox - self.xref)]) + reduce(np.dot, [ou, self.Ru, ou]) + reduce(np.dot, [ou.T, self.Pu.T, self.Pu ,ou])
+        return reduce(np.dot, [(ox - self.xref).T, self.Qx, (ox - self.xref)]) \
+            + reduce(np.dot, [ou, self.Ru, ou]) + reduce(np.dot, [ou.T, self.Pu.T, self.Pu ,ou])
 
     def gradient(self, x):
         #
@@ -93,7 +94,9 @@ class nlmpc(object):
         #
         ox = self.Tx @ x
         ou = self.Tu @ x
-        return np.concatenate((2*self.Qx @ ox, 2*self.Ru @ ou + 2*self.Pu.T @ self.Pu @ ou))
+
+        # return 2*self.Qx @ ox
+        return np.concatenate((2*self.Qx @ ox-2*self.xref, 2*(self.Ru + self.Pu.T @ self.Pu) @ ou))
         # return np.array([
         #             x[0] * x[3] + x[3] * np.sum(x[0:3]),
         #             x[0] * x[3],
@@ -108,11 +111,11 @@ class nlmpc(object):
         od = (self.Tu @ x)[1::2]
         '''
         # 限制Xk与x_(k+1)之间的车辆运动学约束
-        dim2 = T * NX
+        dim2 = (T-1) * NX
         constrain2:
 
-        # 限制角速度与jerk（加加速度）
-        dim1 = (T-1) * NU
+        # 限制角速度
+        dim1 = (T-2) * NU
         constrain1: self.Pc @ ou
         '''
         a = lambda x, i: [x[i*self.NX] + x[i*self.NX+2]*math.cos(x[i*self.NX+3])*self.DT - x[(i+1)*self.NX], \
@@ -124,7 +127,12 @@ class nlmpc(object):
         while i < self.T-1:
             csts = csts + a(x, i)
             i = i + 1
-        
+        # print("constraints is \n", np.concatenate((np.array((tuple(csts))), self.Pc @ od)))
+        # print("  ")
+        # print("constraints1 is \n", np.array((tuple(csts))))
+        # print("  ")
+        # print("constraints2 is \n", self.Pc @ od)
+        # print("  ")
         return np.concatenate((np.array((tuple(csts))), self.Pc @ od))
         
         # return np.array((np.prod(x), np.dot(x, x)))
@@ -219,11 +227,14 @@ class nlmpc(object):
         #
         # The callback for calculating the Hessian
         #
-        rigth_bottle = self.Ru + self.Pu.T @ self.Pu
+        rigth_bottle = (self.Ru + self.Pu.T @ self.Pu) * 2
         
-        top = np.hstack((self.Qx, np.zeros((self.Qx.shape[1],rigth_bottle.shape[1]))))
+        top = np.hstack((2*self.Qx, np.zeros((self.Qx.shape[1],rigth_bottle.shape[1]))))
+        # H = obj_factor * top
         battle = np.hstack((np.zeros((rigth_bottle.shape[0], self.Qx.shape[1])), rigth_bottle))
         H = obj_factor*np.vstack((top, battle))
+        # print("H is\n", H)
+        # print("  ")
         for i in range(self.T-1):
             for k in range(self.NX):
                 H += lagrange[i*self.NX+k] * self.H_i_k(x, i, k)

@@ -57,7 +57,7 @@ WB = 2.5  # [m]
 MAX_STEER = np.deg2rad(45.0)  # maximum steering angle [rad]
 MAX_DSTEER = np.deg2rad(30.0)  # maximum steering speed [rad/s]
 MAX_SPEED = 10.0 / 3.6  # maximum speed [m/s]
-MIN_SPEED = 1.0 / 3.6  # minimum speed [m/s]
+MIN_SPEED = -10.0 / 3.6  # minimum speed [m/s]
 MAX_ACCEL = 1.0  # maximum accel [m/ss]
 
 show_animation = True
@@ -698,7 +698,7 @@ def linear_mpc_control4(xref, xbar, z0, dref):
     zref = np.concatenate((z0, xref.reshape(-1, 1, order='F')[:, 0][:-8]))
     
 
-    x0 = z0.copy()
+    x0 = zref.tolist()
     
     # lb = [1.0, 1.0, 1.0, 1.0]
     # ub = [5.0, 5.0, 5.0, 5.0]
@@ -712,13 +712,13 @@ def linear_mpc_control4(xref, xbar, z0, dref):
     cl = [0 for i in range((T-1)*NX)]
     cu = [0 for i in range((T-1)*NX)]
     '''
-    x0 is current state: [x, y, v, yaw, predelta]
+    x0 is the initial value of the variable to be solved
     '''
     # v上限下限
     for i in range(T-1):
-        ub.extend([10e9, 10e9, MAX_SPEED, 3.14])
-        lb.extend([-10e9, -10e9, MIN_SPEED, -3.14])
-        x0 += [0,0,0,0]
+        ub.extend([10e9, 10e9, MAX_SPEED, 10e9])
+        lb.extend([-10e9, -10e9, MIN_SPEED, -10e9])
+        # x0 += [0,0,0,0]
 
 
     # a和steer上限下限
@@ -732,7 +732,7 @@ def linear_mpc_control4(xref, xbar, z0, dref):
         cl.append(-DT*MAX_DSTEER)
         cu.append(DT*MAX_DSTEER)
 
-    print("x is",len(x0))
+    # print("x is",len(x0))
     nlp = ipopt.problem(
                 n=len(x0),
                 m=len(cl),
@@ -743,7 +743,7 @@ def linear_mpc_control4(xref, xbar, z0, dref):
                 cu=cu
                 )
     nlp.addOption('mu_strategy', 'adaptive')
-    nlp.addOption('tol', 1e-7)
+    nlp.addOption('tol', 1e-5)
     nlp.addOption('print_level', 0)
     nlp.addOption("max_iter", 100)
     x, info = nlp.solve(x0)
@@ -839,17 +839,33 @@ def calc_ref_trajectory(state, cx, cy, cyaw, ck, sp, dl, pind):
     xref[3, 0] = cyaw[ind]
     dref[0, 0] = 0.0  # steer operational point should be 0
 
+    
     travel = 0.0
-    # if state.v < 0.5:
-    #     state.v = 0.5
+    # # if state.v < 0.5:
+    # #     state.v = 0.5
     cur = ind
+    # for i in range(T + 1):
+    #     dind = i+1
+    #     if (ind + dind) < ncourse:
+    #         xref[0, i] = cx[ind + dind]
+    #         xref[1, i] = cy[ind + dind]
+    #         xref[2, i] = sp[ind + dind]
+    #         xref[3, i] = cyaw[ind + dind]
+    #         dref[0, i] = 0.0
+    #     else:
+    #         xref[0, i] = cx[ncourse - 1]
+    #         xref[1, i] = cy[ncourse - 1]
+    #         xref[2, i] = sp[ncourse - 1]
+    #         xref[3, i] = cyaw[ncourse - 1]
+    #         dref[0, i] = 0.0
+
     for i in range(T + 1):
         travel += abs(state.v) * DT
         # print("travel: ", travel)
         # 从连续的路径上，取v*dt间隔路径点
         dind = int(round(travel / dl))
-        if dind == 0:
-            dind = cur + 1 
+        # if dind == 0:
+        #     dind = cur + 1 
         if (ind + dind) < ncourse:
             xref[0, i] = cx[ind + dind]
             xref[1, i] = cy[ind + dind]
