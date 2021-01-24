@@ -2,16 +2,16 @@ import numpy as np
 from functools import reduce
 import math
 class nlmpc(object):
-    def __init__(self, xref):
+    def __init__(self, xref, T):
         self.xref = xref
         self.NX = 4  # x = x, y, v, yaw
         self.NU = 2  # a = [accel, steer]
-        self.T = 5 # horizon length
+        self.T = T # horizon length
 
         # mpc parameters
         self.R = np.diag([0.01, 0.01])  # input cost matrix
-        self.Rd = np.diag([0.01, 0.5])  # input difference cost matrix
-        self.Q = np.diag([3.0, 3.0, 0.01, 0.00])  # state cost matrix
+        self.Rd = np.diag([0.01, 1.0])  # input difference cost matrix
+        self.Q = np.diag([1.0, 1.0, 0.01, 0.00])  # state cost matrix
         self.wq = 1.0
         self.Qf = self.Q  # state final matrix
         # self.GOAL_DIS = 1.5  # goal distance
@@ -85,8 +85,9 @@ class nlmpc(object):
         '''
         obj: (ox - xref)^T * Q * (ox - xref) + ou^T * Ru *ou + (Pu*ou)^T * (Pu*ou)
         '''
-        return reduce(np.dot, [(ox - self.xref).T, self.Qx, (ox - self.xref)]) \
-            + reduce(np.dot, [ou, self.Ru, ou]) + reduce(np.dot, [ou.T, self.Pu.T, self.Pu ,ou])
+        return 0.5 * ((ox - self.xref).T @ self.Qx @ (ox - self.xref) + ou.T @ (self.Ru + self.Pu.T @ self.Pu) @ ou)
+        # return reduce(np.dot, [(ox - self.xref).T, self.Qx, (ox - self.xref)]) \
+        #     + reduce(np.dot, [ou, self.Ru, ou]) + reduce(np.dot, [ou.T, self.Pu.T, self.Pu ,ou])
 
     def gradient(self, x):
         #
@@ -96,7 +97,7 @@ class nlmpc(object):
         ou = self.Tu @ x
 
         # return 2*self.Qx @ ox
-        return np.concatenate((2*self.Qx @ ox-2*self.xref, 2*(self.Ru + self.Pu.T @ self.Pu) @ ou))
+        return np.concatenate((self.Qx @ ox-self.xref, (self.Ru + self.Pu.T @ self.Pu) @ ou))
         # return np.array([
         #             x[0] * x[3] + x[3] * np.sum(x[0:3]),
         #             x[0] * x[3],
@@ -227,9 +228,9 @@ class nlmpc(object):
         #
         # The callback for calculating the Hessian
         #
-        rigth_bottle = (self.Ru + self.Pu.T @ self.Pu) * 2
+        rigth_bottle = (self.Ru + self.Pu.T @ self.Pu)
         
-        top = np.hstack((2*self.Qx, np.zeros((self.Qx.shape[1],rigth_bottle.shape[1]))))
+        top = np.hstack((self.Qx, np.zeros((self.Qx.shape[1],rigth_bottle.shape[1]))))
         # H = obj_factor * top
         battle = np.hstack((np.zeros((rigth_bottle.shape[0], self.Qx.shape[1])), rigth_bottle))
         H = obj_factor*np.vstack((top, battle))
@@ -274,8 +275,8 @@ class nlmpc(object):
             alpha_pr,
             ls_trials
             ):
-
+        pass
         #
         # Example for the use of the intermediate callback.
         #
-        print ("Objective value at iteration #%d is - %g" % (iter_count, obj_value))
+        # print ("Objective value at iteration #%d is - %g" % (iter_count, obj_value))

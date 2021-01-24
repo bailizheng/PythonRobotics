@@ -736,16 +736,20 @@ def linear_mpc_control4(xref, xbar, z0, dref):
     nlp = ipopt.problem(
                 n=len(x0),
                 m=len(cl),
-                problem_obj=nlmpc_problem.nlmpc(zref),
+                problem_obj=nlmpc_problem.nlmpc(zref, T),
                 lb=lb,
                 ub=ub,
                 cl=cl,
                 cu=cu
                 )
     nlp.addOption('mu_strategy', 'adaptive')
-    nlp.addOption('tol', 1e-5)
+    nlp.addOption('tol', 1e-3)
     nlp.addOption('print_level', 0)
     nlp.addOption("max_iter", 100)
+    nlp.addOption("warm_start_init_point", "yes")
+    # nlp.addOption("mehrotra_algorithm", "yes")
+
+    
     x, info = nlp.solve(x0)
 
     z = x[:T*NX]
@@ -758,12 +762,12 @@ def linear_mpc_control4(xref, xbar, z0, dref):
 
     oa = u[0::2]
     od = u[1::2]
-    print("z0 is\n", z0)
-    print("lb is\n", lb)
-    print("ub is\n", ub )
-    print("zref is\n", zref)
-    print(z)
-    print(u)
+    # print("z0 is\n", z0)
+    # print("lb is\n", lb)
+    # print("ub is\n", ub )
+    # print("zref is\n", zref)
+    # print(z)
+    # print(u)
     return oa, od, ox, oy, oyaw, ov 
     
 def linear_mpc_control(xref, xbar, x0, dref):
